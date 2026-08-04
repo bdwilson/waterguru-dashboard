@@ -46,6 +46,7 @@ flowchart TD
     WG[("WaterGuru backend<br/>(AWS Cognito + Lambda,<br/>no public API)")]
     NWS[("National Weather Service<br/>api.weather.gov")]
     OLLAMA{{"Ollama<br/>$OLLAMA_HOST, default localhost:11434<br/>(local by default)"}}
+    CLAUDE{{"Claude API<br/>(optional cross-check,<br/>off unless a key is set)"}}
 
     subgraph Mac["This machine — launchd (macOS) or cron (Linux), twice daily (8am / 8pm)"]
         FETCH["fetch.py<br/>Cognito SRP login → getDashboardView Lambda call"]
@@ -56,6 +57,7 @@ flowchart TD
         ADVISOR["swim_advisor.py<br/>per-day verdict + heater advice"]
         ALERTS["alerts.py<br/>RED / back-to-normal"]
         LLMC["llm.py<br/>shared Ollama client"]
+        VERIFY["verify.py<br/>second opinion + cost accounting"]
         DEPLOY["run_and_publish.sh<br/>wrangler pages deploy"]
     end
 
@@ -88,6 +90,8 @@ flowchart TD
     WX --> ADVISOR
     HIST --> ADVISOR
     ADVISOR --> ADV
+    ADV -.-> VERIFY
+    CLAUDE <-.->|"verdicts / verdict review"| VERIFY -.-> ADV
     HIST --> DEPLOY
     SUMM --> DEPLOY
     WX --> DEPLOY
@@ -98,9 +102,14 @@ flowchart TD
 
 Every arrow into `site/data/*.json` happens locally; the only outbound calls per
 run are to WaterGuru, the National Weather Service, ntfy.sh and/or Pushover (if
-configured), and finally Cloudflare when publishing. The LLM calls (dashed arrow)
-never leave the machine by default — Ollama runs on `localhost:11434` unless you
-deliberately point `OLLAMA_HOST` at another box on your LAN.
+configured), and finally Cloudflare when publishing. The Ollama call never leaves
+the machine by default — it runs on `localhost:11434` unless you deliberately
+point `OLLAMA_HOST` at another box on your LAN.
+
+The two dotted paths are both opt-in and both off unless you configure them. The
+Claude cross-check is the one step that sends pool data off your network, and
+only the forecast plus the model's own verdicts — no chemistry history, no
+credentials. It does nothing at all without an `ANTHROPIC_API_KEY`.
 
 ---
 
@@ -131,6 +140,7 @@ db.py                        # SQLite schema + row parsing
 publish.py                   # SQLite → site/data/history.json
 weather.py                   # NWS forecast → site/data/weather.json (+ rule-based swim score)
 llm.py                       # shared Ollama client — model/host come from .env
+verify.py                    # optional Claude API cross-check of the swim verdicts
 trend_summary.py             # local LLM → site/data/summary.json
 swim_advisor.py              # local LLM → site/data/swim_advice.json
 alerts.py                    # desktop notification + ntfy.sh / Pushover on RED / recovery
@@ -153,6 +163,7 @@ site/
 ```bash
 python3 -m venv venv
 ./venv/bin/pip install requests requests_aws4auth boto3 pycognito
+./venv/bin/pip install anthropic   # optional, only for the Claude cross-check
 cp .env.example .env   # fill in WG_USER / WG_PASS (see below)
 ./venv/bin/python fetch.py
 ```
@@ -289,6 +300,159 @@ whether the advisor's output contract validated:
 
 It unloads each model before moving to the next, so timings are comparable and
 peak memory stays at one model's worth.
+
+#### Setting up the model host
+
+Loading models onto the Mac that will serve them, once:
+
+```bash
+brew install ollama                 # or the .dmg from https://ollama.com/download
+
+ollama pull gemma3:12b              # swim advisor  — ~8.1 GB
+ollama pull llama3.2:3b             # trend summary — ~2.0 GB
+ollama list                         # confirm both are there
+
+# Optional alternatives worth benchmarking against the two above:
+ollama pull gemma3:27b              # ~17 GB, slower but more judgment
+ollama pull gemma3:12b-it-qat       # quantization-aware training, near-bf16 quality at ~Q4 size
+ollama pull gemma3:4b               # ~3.3 GB, a better trend model than llama3.2:3b
+```
+
+Pulls are resumable and cached under `~/.ollama/models`; `ollama rm <tag>` frees
+the disk again. Nothing is loaded into memory until a request arrives.
+
+To make it a login-time service that listens on the LAN rather than only on
+localhost, and keeps both models resident between the twice-daily runs:
+
+```bash
+mkdir -p ~/Library/LaunchAgents
+cat > ~/Library/LaunchAgents/com.ollama.serve.plist <<'PLIST'
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key><string>com.ollama.serve</string>
+  <key>ProgramArguments</key>
+  <array><string>/opt/homebrew/bin/ollama</string><string>serve</string></array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>OLLAMA_HOST</key><string>0.0.0.0:11434</string>
+    <key>OLLAMA_KEEP_ALIVE</key><string>24h</string>
+    <key>OLLAMA_MAX_LOADED_MODELS</key><string>2</string>
+  </dict>
+  <key>RunAtLoad</key><true/>
+  <key>KeepAlive</key><true/>
+</dict>
+</plist>
+PLIST
+launchctl load ~/Library/LaunchAgents/com.ollama.serve.plist
+curl -s localhost:11434/api/tags | head -c 200      # verify locally
+```
+
+`OLLAMA_KEEP_ALIVE=24h` matters for a twice-daily job: at the 5-minute default
+every run reloads both models from disk first. With 10 GB of models against a
+21-24 GB budget, keeping them resident costs nothing you need back.
+
+> **`OLLAMA_HOST=0.0.0.0` has no authentication.** Anyone who can reach port
+> 11434 can use your GPU and read your prompts. Only do this on a network you
+> trust, and prefer a firewall rule, Tailscale, or an SSH tunnel
+> (`ssh -N -L 11434:localhost:11434 you@mac-mini`) over exposing it broadly.
+> Verify what's listening with `lsof -nP -iTCP:11434 | grep LISTEN`.
+
+#### Splitting the job across two machines
+
+Running the pipeline on a Linux box while the models live on a Mac is a
+supported layout — the only thing that crosses the network is the Ollama call.
+On the Linux side:
+
+```
+OLLAMA_HOST=http://mac-mini.local:11434
+WG_ADVISOR_MODEL=gemma3:12b
+WG_TREND_MODEL=llama3.2:3b
+```
+
+Check the link before wiring up cron — this is the failure that otherwise shows
+up as a silent fall back to rule-based output twice a day:
+
+```bash
+curl -s http://mac-mini.local:11434/api/tags                    # reachable?
+OLLAMA_HOST=http://mac-mini.local:11434 ./venv/bin/python bench_models.py --job advisor
+```
+
+`bench_models.py` works across the network too, so you can benchmark the Mac's
+models from the machine that will actually be calling them. Two things to watch:
+the Mac must not sleep (`sudo pmset -a sleep 0 disablesleep 1`, or at minimum
+`sudo pmset -a networkoversleep 1`), and if it's on Wi-Fi the ~8 GB model load
+happens on the Mac's own disk, so only the prompt and response cross the
+network — bandwidth is a non-issue, but a dropped link isn't.
+
+---
+
+## Verifying the AI output (optional, Claude API)
+
+The local model does a judgment task with no ground truth. Constrained decoding
+guarantees the *shape* of its answer; nothing guarantees the *quality*. If you
+want a check on that, `verify.py` sends the forecast, the water temp, and the
+local model's verdicts to the Claude API and asks whether the calls hold up.
+
+It is entirely opt-in. With no `ANTHROPIC_API_KEY` set, nothing runs and nothing
+leaves the machine that didn't already. If it fails for any reason — no key, API
+error, refusal, unparseable response — the published advice is untouched.
+
+```
+ANTHROPIC_API_KEY=sk-ant-...
+WG_VERIFY_MODE=audit          # audit | correct | off
+WG_VERIFY_MODEL=claude-opus-5
+WG_VERIFY_EFFORT=low          # low | medium | high | xhigh | max
+```
+
+- **`audit`** (default) records agreement and disagreement but publishes the
+  local model's calls unchanged. This is the mode that answers "is the data
+  valid" — run it for a week and read the disagreement log.
+- **`correct`** lets Claude's corrections overwrite the local verdicts.
+
+### What it costs
+
+The prompt is small — a 5-day forecast, five verdicts, and the heater
+paragraph — so a run is roughly 800 input and 450 output tokens:
+
+| Model | Per run | Per year (2×/day) |
+|---|---|---|
+| `claude-haiku-4-5` | $0.003 | ~$2 |
+| `claude-sonnet-5` | $0.009 | ~$7 |
+| `claude-opus-5` (default) | $0.015 | ~$11 |
+
+Those are computed from list prices, but you don't have to trust them: **every
+run records its actual token usage and dollar cost** in `swim_advice.json` and
+prints it in the log, so the real number is always in front of you.
+
+```json
+"verification": {
+  "model": "claude-opus-5",
+  "checked": 5,
+  "disagreements": [
+    {"date": "2026-08-06", "was": "poor", "suggested": "marginal",
+     "issue": "storms clear by midday; the afternoon is swimmable"}
+  ],
+  "usage": {"input_tokens": 812, "output_tokens": 447},
+  "cost_usd": 0.015235
+}
+```
+
+Two notes on the cost, since both are easy to get wrong:
+
+- **`WG_VERIFY_EFFORT` is the real lever, not the model.** Thinking tokens bill
+  as output, so effort moves the bill more than the model choice does on a task
+  this small. It defaults to `low` because checking five weather verdicts is not
+  a hard reasoning problem — raise it if the checks read as shallow.
+- **Prompt caching won't help here.** The minimum cacheable prefix is 512-1024
+  tokens depending on model, the shared part of this prompt is under that, and
+  runs are twelve hours apart — far outside the 5-minute (or even 1-hour) cache
+  TTL. Enabling it would only add the ~1.25× write premium.
+
+The dashboard shows the result: a verdict that survived review reads
+"cross-checked by claude-opus-5, no disagreements" rather than looking identical
+to one nobody checked.
 
 ---
 

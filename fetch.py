@@ -26,6 +26,7 @@ from alerts import check_and_alert
 from weather import export_weather
 from trend_summary import export_summaries
 from swim_advisor import export_advice
+from verify import verify_and_apply
 
 REGION = "us-west-2"
 POOL_ID = "us-west-2_icsnuWQWw"
@@ -111,6 +112,23 @@ def main():
         )
     except Exception as e:
         print(f"swim advisor failed: {e}", file=sys.stderr)
+
+    # Optional second opinion on the local model's verdicts. No-ops without an
+    # ANTHROPIC_API_KEY, and never blocks publishing if it fails.
+    try:
+        result = verify_and_apply(
+            HERE / "site" / "data" / "swim_advice.json",
+            HERE / "site" / "data" / "weather.json",
+            water_temp=rows[0]["water_temp"] if rows else None,
+        )
+        if result:
+            cost = f"${result['cost_usd']:.4f}" if result["cost_usd"] is not None else "cost unknown"
+            print(
+                f"verified by {result['model']}: {len(result['disagreements'])}/{result['checked']} "
+                f"disagreements, {cost}"
+            )
+    except Exception as e:
+        print(f"verification failed: {e}", file=sys.stderr)
 
 
 if __name__ == "__main__":

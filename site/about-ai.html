@@ -152,6 +152,7 @@
       model has internet access or tool use — they just read the numbers they're given and write text
       back. The only things that do leave the machine each run are the calls to WaterGuru, the National
       Weather Service, and — if you've enabled push alerts — ntfy.sh or Pushover.</p>
+    <p class="muted" id="verifyNote" style="display:none"></p>
   </div>
 
   <div class="card">
@@ -273,6 +274,22 @@
     if (first) set('trendModelTag', first.model);
   }
   if (advice) set('advisorModelTag', advice.model);
+
+  // The "runs locally" claim above stops being the whole truth once the optional
+  // Claude cross-check is enabled — say so on the page rather than in the repo only.
+  const v = advice && advice.verification;
+  if (v && v.checked) {
+    const n = (v.disagreements || []).length;
+    const el = document.getElementById('verifyNote');
+    el.textContent =
+      `One exception, currently enabled: after the local model answers, its swim verdicts and the ` +
+      `weather forecast are sent to ${v.model} via the Claude API for a second opinion — no pool ` +
+      `chemistry history and no credentials. On the latest run it checked ${v.checked} day(s) and ` +
+      (n === 0 ? 'agreed with all of them' :
+        `disagreed on ${n}, which ${v.corrections_applied ? 'were corrected above' : 'were flagged but left as-is'}`) +
+      (v.cost_usd != null ? `, at a cost of $${v.cost_usd.toFixed(4)}.` : '.');
+    el.style.display = '';
+  }
 })();
 </script>
 </body>
