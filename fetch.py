@@ -20,6 +20,7 @@ from pycognito import Cognito
 from pycognito.aws_srp import AWSSRP
 
 from db import store_snapshot
+from envfile import load_dotenv
 from publish import export as export_history
 from alerts import check_and_alert
 from weather import export_weather
@@ -36,17 +37,6 @@ LAMBDA_URL = "https://lambda.us-west-2.amazonaws.com/2015-03-31/functions/prod-g
 HERE = Path(__file__).resolve().parent
 HISTORY_FILE = HERE / "data" / "history.jsonl"
 LATEST_FILE = HERE / "data" / "latest.json"
-
-
-def load_dotenv(path: Path):
-    if not path.exists():
-        return
-    for line in path.read_text().splitlines():
-        line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
-            continue
-        k, v = line.split("=", 1)
-        os.environ.setdefault(k.strip(), v.strip())
 
 
 def fetch_dashboard(user: str, password: str) -> dict:

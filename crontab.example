@@ -1,0 +1,29 @@
+# WaterGuru dashboard - twice-daily fetch, publish, and alert.
+#
+# Install with:   crontab -e     (then paste, editing the path)
+# Verify with:    crontab -l
+#
+# Two things bite people here, and both are handled below rather than in the
+# environment: cron runs with a nearly empty PATH and no shell profile, and it
+# mails you every line of output unless you redirect it. run_and_publish.sh
+# fixes PATH itself and reads credentials from .env, so the crontab only has to
+# say where the project lives and where the log goes.
+
+SHELL=/bin/bash
+MAILTO=""
+
+# 8am and 8pm, local time of the machine's timezone.
+# Don't go more often than this - WaterGuru's API does a full Cognito login on
+# every run and isn't meant for polling.
+0 8,20 * * *  WG_LOG=/home/YOU/waterguru-dashboard/data/cron.log /home/YOU/waterguru-dashboard/run_and_publish.sh
+
+# Headless server with no Cloudflare deploy configured? Skip the deploy step:
+# 0 8,20 * * *  WG_SKIP_DEPLOY=1 WG_LOG=/home/YOU/waterguru-dashboard/data/cron.log /home/YOU/waterguru-dashboard/run_and_publish.sh
+
+# Ollama running on a different machine than this one (e.g. dashboard on a
+# Linux box, models on the Mac Mini)? Point at it - and make sure that Mac is
+# started with OLLAMA_HOST=0.0.0.0 so it listens beyond localhost:
+# OLLAMA_HOST=http://mac-mini.local:11434
+#
+# Anything set here as a cron environment variable also works in .env, which is
+# usually the tidier place for it.

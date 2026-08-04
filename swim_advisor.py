@@ -11,12 +11,34 @@ import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 
-import requests
-
+import llm
 from db import DB_PATH
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL = "qwen2.5:32b"
+VALID_VERDICTS = ["great", "good", "marginal", "poor"]
+
+# Ollama constrains sampling to this schema (Ollama >= 0.5), so the output
+# contract is enforced by the decoder rather than by asking the model politely.
+# That is what lets a mid-size local model do this job reliably - the failure
+# mode of a small model becomes a weak verdict, not unparseable output.
+ADVICE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "days": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "date": {"type": "string"},
+                    "verdict": {"type": "string", "enum": VALID_VERDICTS},
+                    "note": {"type": "string"},
+                },
+                "required": ["date", "verdict", "note"],
+            },
+        },
+        "heater_advice": {"type": "string"},
+    },
+    "required": ["days", "heater_advice"],
+}
 
 
 def _latest_water_temp(water_body_id: str):
@@ -61,24 +83,22 @@ Respond with ONLY this JSON shape, no other text:
 "heater_advice": "<2-4 sentences>"}}"""
 
 
-def _call_llm(prompt: str) -> dict | None:
+def _call_llm(prompt: str) -> tuple[dict, llm.LLMResult] | None:
+    result = llm.generate(
+        prompt,
+        model=llm.advisor_model(),
+        fmt=ADVICE_SCHEMA,
+        timeout=llm.timeout_s(180),
+    )
+    if not result or not result.text:
+        return None
     try:
-        resp = requests.post(
-            OLLAMA_URL,
-            json={"model": MODEL, "prompt": prompt, "stream": False, "format": "json"},
-            timeout=120,
-        )
-        resp.raise_for_status()
-        text = resp.json().get("response", "")
-        parsed = json.loads(text)
-        if "days" in parsed and "heater_advice" in parsed:
-            return parsed
+        parsed = json.loads(result.text)
+    except json.JSONDecodeError:
         return None
-    except (requests.RequestException, json.JSONDecodeError, KeyError):
+    if not isinstance(parsed, dict) or "days" not in parsed or "heater_advice" not in parsed:
         return None
-
-
-VALID_VERDICTS = {"great", "good", "marginal", "poor"}
+    return parsed, result
 
 
 def _valid_llm_result(result: dict, days: list[dict]) -> bool:
@@ -101,7 +121,7 @@ def build_advice(weather_path: Path, history_path: Path) -> dict:
     weather = json.loads(weather_path.read_text())
     days = weather.get("days", [])
     if not days:
-        return {"days": {}, "heater_advice": None, "source": "none"}
+        return {"days": {}, "heater_advice": None, "source": "none", "model": None, "elapsed_s": None}
 
     history = json.loads(history_path.read_text())
     wb_id = next(iter(history.get("waterbodies", {})), None)
@@ -109,11 +129,18 @@ def build_advice(weather_path: Path, history_path: Path) -> dict:
 
     today = datetime.now(timezone.utc)
     prompt = _build_prompt(days, water_temp, today)
-    llm_result = _call_llm(prompt)
+    called = _call_llm(prompt)
 
-    if llm_result and _valid_llm_result(llm_result, days):
-        by_date = {d["date"]: d for d in llm_result["days"]}
-        return {"days": by_date, "heater_advice": llm_result["heater_advice"], "source": "llm"}
+    if called and _valid_llm_result(called[0], days):
+        parsed, meta = called
+        by_date = {d["date"]: d for d in parsed["days"]}
+        return {
+            "days": by_date,
+            "heater_advice": parsed["heater_advice"],
+            "source": "llm",
+            "model": meta.model,
+            "elapsed_s": round(meta.elapsed_s, 1),
+        }
 
     # Fallback: reuse the rule-based scores already in weather.json
     by_date = {
@@ -124,7 +151,7 @@ def build_advice(weather_path: Path, history_path: Path) -> dict:
         }
         for d in days
     }
-    return {"days": by_date, "heater_advice": None, "source": "rule_based"}
+    return {"days": by_date, "heater_advice": None, "source": "rule_based", "model": None, "elapsed_s": None}
 
 
 def export_advice(weather_path: Path, history_path: Path, out_path: Path):
@@ -135,6 +162,9 @@ def export_advice(weather_path: Path, history_path: Path, out_path: Path):
 
 
 if __name__ == "__main__":
+    from envfile import load_dotenv
+
+    load_dotenv()
     here = Path(__file__).resolve().parent
     print(
         export_advice(

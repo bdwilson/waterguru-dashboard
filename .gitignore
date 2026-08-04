@@ -3,6 +3,8 @@ venv/
 data/history.jsonl
 data/latest.json
 data/waterguru.db
+data/*.log
+.run.lock
 site/data/history.json
 site/data/summary.json
 site/data/weather.json
