@@ -163,30 +163,43 @@ site/
 ```bash
 python3 -m venv venv
 ./venv/bin/pip install requests requests_aws4auth boto3 pycognito
-./venv/bin/pip install anthropic   # optional, only for the Claude cross-check
-cp .env.example .env   # fill in WG_USER / WG_PASS (see below)
+./venv/bin/pip install anthropic
+cp .env.example .env
 ./venv/bin/python fetch.py
 ```
+
+The `anthropic` install is optional — it's only needed for the Claude cross-check
+described below. Fill in `WG_USER` / `WG_PASS` in `.env` before the first fetch.
 
 `.env`:
 
 ```
-WG_USER=your@email.address       # same login as the WaterGuru mobile app
+WG_USER=your@email.address
 WG_PASS=your_waterguru_password
-WX_LAT=                          # optional, for the 5-day swim forecast (US only)
+WX_LAT=
 WX_LON=
 
-NTFY_TOPIC=                      # optional alert channel, see Alerting below
-PUSHOVER_USER_KEY=               # optional alert channel, see Alerting below
+NTFY_TOPIC=
+PUSHOVER_USER_KEY=
 PUSHOVER_API_TOKEN=
 
-OLLAMA_HOST=http://localhost:11434   # optional, see Local LLM below
+OLLAMA_HOST=http://localhost:11434
 WG_TREND_MODEL=llama3.2:3b
 WG_ADVISOR_MODEL=gemma3:12b
 ```
 
+| | |
+|---|---|
+| `WG_USER` / `WG_PASS` | Same login as the WaterGuru mobile app. The only required values. |
+| `WX_LAT` / `WX_LON` | For the 5-day swim forecast (US only). |
+| `NTFY_TOPIC`, `PUSHOVER_*` | Alert channels — see [Alerting](#alerting). |
+| `OLLAMA_HOST`, `WG_*_MODEL` | Local LLM host and model choice — see [Local LLM](#local-llm-ollama). |
+
 Everything past `WG_PASS` is optional — each feature turns itself off if its
 settings are missing. See `.env.example` for the full annotated list.
+
+Inline `# comments` after a value are stripped, so `WG_TREND_MODEL=gemma3:4b  # faster`
+does the right thing. Quote the value if it genuinely contains ` #`.
 
 `.env` is gitignored — never commit it. So is `data/waterguru.db` and everything
 under `site/data/` except `.gitkeep` (all generated, regenerated on every run). The
@@ -202,9 +215,13 @@ that doesn't validate, `trend_summary.py` falls back to a rule-based sentence an
 dashboard still renders.
 
 ```bash
-ollama pull llama3.2:3b     # trend summary — fast, small, plenty for summarizing numbers
-ollama pull gemma3:12b      # swim advisor — needs more judgment, see below
+ollama pull llama3.2:3b
+ollama pull gemma3:12b
 ```
+
+`llama3.2:3b` handles the trend summary — small and fast, plenty for summarizing
+numbers. `gemma3:12b` handles the swim advisor, which needs more judgment; see
+the sizing table below.
 
 Which model does which job is configuration, not code:
 
@@ -263,11 +280,11 @@ roughly Q4 size and are a straight swap for the tags above.
 
 Ollama loads models on demand and keeps them resident for 5 minutes by default:
 
-```bash
-OLLAMA_MAX_LOADED_MODELS=3    # how many may be resident at once
-OLLAMA_KEEP_ALIVE=30m         # how long an idle model stays loaded
-OLLAMA_NUM_PARALLEL=1         # concurrent requests per model
-```
+| Variable | Meaning | Default |
+|---|---|---|
+| `OLLAMA_MAX_LOADED_MODELS` | How many models may be resident at once | 3 |
+| `OLLAMA_KEEP_ALIVE` | How long an idle model stays loaded | `5m` |
+| `OLLAMA_NUM_PARALLEL` | Concurrent requests per model | auto |
 
 Concurrency is bounded by that same 21-24 GB budget — Ollama will evict rather
 than overcommit, so the arithmetic is just "do the sizes add up." `gemma3:12b` +
@@ -283,8 +300,11 @@ If you want to raise the GPU cap on a 32 GB machine (leave at least 8 GB for
 macOS — allocating everything will hang the machine):
 
 ```bash
-sudo sysctl iogpu.wired_limit_mb=24576   # resets on reboot; 0 restores the default
+sudo sysctl iogpu.wired_limit_mb=24576
 ```
+
+That resets on reboot; `sudo sysctl iogpu.wired_limit_mb=0` restores the default
+immediately.
 
 #### Measuring instead of guessing
 
@@ -293,30 +313,44 @@ prompts against whatever you have pulled and reports wall time, tokens/sec, and
 whether the advisor's output contract validated:
 
 ```bash
-./venv/bin/python bench_models.py                          # everything installed
-./venv/bin/python bench_models.py gemma3:12b qwen2.5:32b   # head to head
-./venv/bin/python bench_models.py --job advisor --runs 3   # consistency check
+./venv/bin/python bench_models.py
+./venv/bin/python bench_models.py gemma3:12b qwen2.5:32b
+./venv/bin/python bench_models.py --job advisor --runs 3
 ```
+
+With no arguments it tests everything installed; naming models compares them head
+to head; `--runs 3` repeats each one to check the verdicts are consistent.
 
 It unloads each model before moving to the next, so timings are comparable and
 peak memory stays at one model's worth.
 
 #### Setting up the model host
 
-Loading models onto the Mac that will serve them, once:
+Loading models onto the Mac that will serve them, once. Every block in this
+section is comment-free so it can be pasted whole — macOS defaults to zsh, which
+(unlike bash) does **not** treat `#` as a comment in an interactive shell, so a
+pasted line with a trailing comment fails outright rather than ignoring it.
 
 ```bash
-brew install ollama                 # or the .dmg from https://ollama.com/download
-
-ollama pull gemma3:12b              # swim advisor  — ~8.1 GB
-ollama pull llama3.2:3b             # trend summary — ~2.0 GB
-ollama list                         # confirm both are there
-
-# Optional alternatives worth benchmarking against the two above:
-ollama pull gemma3:27b              # ~17 GB, slower but more judgment
-ollama pull gemma3:12b-it-qat       # quantization-aware training, near-bf16 quality at ~Q4 size
-ollama pull gemma3:4b               # ~3.3 GB, a better trend model than llama3.2:3b
+brew install ollama
+ollama pull gemma3:12b
+ollama pull llama3.2:3b
+ollama list
 ```
+
+(Or install from the `.dmg` at <https://ollama.com/download> instead of Homebrew.)
+`gemma3:12b` is ~8.1 GB and serves the swim advisor; `llama3.2:3b` is ~2.0 GB and
+serves the trend summary. Optional alternatives worth benchmarking against them:
+
+```bash
+ollama pull gemma3:27b
+ollama pull gemma3:12b-it-qat
+ollama pull gemma3:4b
+```
+
+`gemma3:27b` is ~17 GB — slower, more judgment. `gemma3:12b-it-qat` is Google's
+quantization-aware build, near-bf16 quality at roughly Q4 size. `gemma3:4b` is
+~3.3 GB and a better trend model than `llama3.2:3b`.
 
 Pulls are resumable and cached under `~/.ollama/models`; `ollama rm <tag>` frees
 the disk again. Nothing is loaded into memory until a request arrives.
@@ -346,8 +380,13 @@ cat > ~/Library/LaunchAgents/com.ollama.serve.plist <<'PLIST'
 </plist>
 PLIST
 launchctl load ~/Library/LaunchAgents/com.ollama.serve.plist
-curl -s localhost:11434/api/tags | head -c 200      # verify locally
+curl -s localhost:11434/api/tags | head -c 200
 ```
+
+That last line should print JSON listing the models you pulled. If Homebrew put
+`ollama` somewhere other than `/opt/homebrew/bin` (Intel Macs use
+`/usr/local/bin`), fix the path in the plist first — check with
+`command -v ollama`.
 
 `OLLAMA_KEEP_ALIVE=24h` matters for a twice-daily job: at the 5-minute default
 every run reloads both models from disk first. With 10 GB of models against a
@@ -375,7 +414,7 @@ Check the link before wiring up cron — this is the failure that otherwise show
 up as a silent fall back to rule-based output twice a day:
 
 ```bash
-curl -s http://mac-mini.local:11434/api/tags                    # reachable?
+curl -s http://mac-mini.local:11434/api/tags
 OLLAMA_HOST=http://mac-mini.local:11434 ./venv/bin/python bench_models.py --job advisor
 ```
 
@@ -486,9 +525,12 @@ git clone https://github.com/billford/waterguru-dashboard && cd waterguru-dashbo
 python3 -m venv venv
 ./venv/bin/pip install requests requests_aws4auth boto3 pycognito
 cp .env.example .env && $EDITOR .env
-./run_and_publish.sh          # confirm one manual run works first
-crontab -e                    # then paste from crontab.example, fixing the path
+./run_and_publish.sh
+crontab -e
 ```
+
+Run `./run_and_publish.sh` by hand once and confirm it works before scheduling it.
+Then paste the schedule from `crontab.example` into `crontab -e`, fixing the path.
 
 `crontab.example` has the schedule ready to edit:
 
@@ -558,10 +600,12 @@ subsequent reading):
 ## Deploying the dashboard
 
 ```bash
-npx wrangler login          # one-time browser auth
+npx wrangler login
 npx wrangler pages project create waterguru-dashboard --production-branch main
-./run_and_publish.sh        # fetch + deploy
+./run_and_publish.sh
 ```
+
+`wrangler login` is a one-time browser auth; the last line does a fetch and deploy.
 
 The dashboard reads `site/data/*.json` client-side — there's no backend, just
 static files that get overwritten and redeployed on each fetch. Deployment is a

@@ -20,7 +20,21 @@ def load_dotenv(path: Path | None = None):
         if not line or line.startswith("#") or "=" not in line:
             continue
         k, v = line.split("=", 1)
-        os.environ.setdefault(k.strip(), v.strip().strip('"').strip("'"))
+        os.environ.setdefault(k.strip(), _clean_value(v))
+
+
+def _clean_value(raw: str) -> str:
+    """Strips surrounding quotes, and a trailing ` # comment` on unquoted values.
+
+    People write inline comments in .env files whether or not the format invites
+    it; without this, `OLLAMA_HOST=http://host:11434  # the Mac` silently sets a
+    URL with the comment glued on. Quoted values are left alone so a password
+    containing ' #' survives.
+    """
+    v = raw.strip()
+    if len(v) >= 2 and v[0] == v[-1] and v[0] in "\"'":
+        return v[1:-1]
+    return v.split(" #", 1)[0].split("\t#", 1)[0].strip()
 
 
 def env_flag(name: str, default: bool = False) -> bool:
