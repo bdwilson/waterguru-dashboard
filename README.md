@@ -737,6 +737,8 @@ subsequent reading):
 
 ## Deploying the dashboard
 
+### On a machine with a browser (interactive)
+
 A one-time browser auth, then create the project:
 
 ```bash
@@ -748,6 +750,42 @@ Every deploy after that is just a normal run:
 ```bash
 ./run_and_publish.sh
 ```
+
+### On a headless box (cron, SSH-only) — use an API token instead
+
+`wrangler login` has no way to complete on a machine with no local browser:
+it opens a link and waits for *that same machine* to receive the OAuth
+redirect on `localhost`. If you open the link on your laptop while `wrangler
+login` runs on a headless server, the redirect tries to reach `localhost` on
+your laptop, where nothing's listening — there's no field anywhere to paste
+that callback back in, because wrangler's login flow doesn't have one.
+
+Skip OAuth entirely with a scoped API token instead — it's also the better
+fit for cron, since it doesn't need re-authenticating like a browser session:
+
+1. [dash.cloudflare.com](https://dash.cloudflare.com) → profile icon → **My
+   Profile → API Tokens** → **Create Token** → **Create Custom Token** →
+   permission **Account → Cloudflare Pages → Edit**.
+2. Grab your **Account ID** from the same dashboard's sidebar, or the
+   Workers & Pages overview page.
+3. Put both in `.env`:
+
+```
+CLOUDFLARE_API_TOKEN=your_token_here
+CLOUDFLARE_ACCOUNT_ID=your_account_id_here
+```
+
+`run_and_publish.sh` bridges these (and `WG_CF_PROJECT_NAME`, if you named
+your project something other than `waterguru-dashboard`) from `.env` into the
+shell before calling `npx wrangler` — wrangler itself only reads them from its
+process environment, not from this project's `.env` file, so that bridge step
+is what actually makes them take effect. `wrangler pages project create`
+still needs a one-time interactive run somewhere with a browser (or `--help`
+your way through the non-interactive flags), but every deploy after that runs
+unattended with the token — no login step, ever.
+
+Don't commit the token — it's a credential with deploy access to your
+Cloudflare account, same handling as `WG_PASS`.
 
 The dashboard reads `site/data/*.json` client-side — there's no backend, just
 static files that get overwritten and redeployed on each fetch. Deployment is a

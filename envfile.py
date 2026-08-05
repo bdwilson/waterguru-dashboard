@@ -17,7 +17,14 @@ def load_dotenv(path: Path | None = None):
         return
     for line in path.read_text().splitlines():
         line = line.strip()
-        if not line or line.startswith("#") or "=" not in line:
+        if not line or line.startswith("#"):
+            continue
+        # `export KEY=value` is a common way to write .env files (it's valid
+        # shell too) - strip the keyword before splitting, or KEY would come
+        # out as "export KEY" and the real name never gets set.
+        if line.startswith("export "):
+            line = line[len("export "):].lstrip()
+        if "=" not in line:
             continue
         k, v = line.split("=", 1)
         os.environ.setdefault(k.strip(), _clean_value(v))
