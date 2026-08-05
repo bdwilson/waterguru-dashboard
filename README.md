@@ -161,15 +161,18 @@ site/
 ## Setup
 
 ```bash
-python3 -m venv venv
-./venv/bin/pip install requests requests_aws4auth boto3 pycognito
-./venv/bin/pip install anthropic
-cp .env.example .env
+python3 -m venv venv && ./venv/bin/pip install requests requests_aws4auth boto3 pycognito anthropic && cp -n .env.example .env
+```
+
+Then fill in `WG_USER` / `WG_PASS` in `.env`, and run the first fetch:
+
+```bash
 ./venv/bin/python fetch.py
 ```
 
-The `anthropic` install is optional — it's only needed for the Claude cross-check
-described below. Fill in `WG_USER` / `WG_PASS` in `.env` before the first fetch.
+`anthropic` is optional — it's only needed for the Claude cross-check described
+below; drop it from the install line if you don't want it. `cp -n` won't clobber
+an existing `.env`.
 
 `.env`:
 
@@ -215,8 +218,7 @@ that doesn't validate, `trend_summary.py` falls back to a rule-based sentence an
 dashboard still renders.
 
 ```bash
-ollama pull llama3.2:3b
-ollama pull gemma3:12b
+for m in llama3.2:3b gemma3:12b; do ollama pull "$m"; done && ollama list
 ```
 
 `llama3.2:3b` handles the trend summary — small and fast, plenty for summarizing
@@ -334,23 +336,30 @@ The numbers above are estimates. `bench_models.py` runs this project's *actual*
 prompts against whatever you have pulled and reports wall time, tokens/sec, and
 whether the advisor's output contract validated:
 
+These are alternatives, not a sequence — pick the one you want:
+
+Everything currently installed:
+
 ```bash
 ./venv/bin/python bench_models.py
-./venv/bin/python bench_models.py gemma3:12b gemma3:27b
-./venv/bin/python bench_models.py --job advisor --runs 3
 ```
 
-With no arguments it tests everything installed; naming models compares them head
-to head; `--runs 3` repeats each one to check the verdicts are consistent. Model
-names may come before or after the flags, and tags containing `/` or `:` (such as
-a `hf.co/...` build) need no quoting.
+Two candidates head to head, three runs each, advisor job only:
 
-It also works against a remote Ollama, so you can benchmark the model host from
-the machine that will actually be calling it:
+```bash
+./venv/bin/python bench_models.py gemma3:12b gemma3:27b --job advisor --runs 3
+```
+
+Against a model host on another machine, so you benchmark from the box that will
+actually be calling it:
 
 ```bash
 OLLAMA_HOST=http://mac-mini.local:11434 ./venv/bin/python bench_models.py --job advisor --runs 3
 ```
+
+Model names may come before or after the flags, and tags containing `/` or `:`
+(such as a `hf.co/...` build) need no quoting. `--runs 3` repeats each model so
+you can see whether its verdicts are consistent, not just plausible once.
 
 It unloads each model before moving to the next, so timings are comparable and
 peak memory stays at one model's worth.
@@ -362,11 +371,13 @@ section is comment-free so it can be pasted whole — macOS defaults to zsh, whi
 (unlike bash) does **not** treat `#` as a comment in an interactive shell, so a
 pasted line with a trailing comment fails outright rather than ignoring it.
 
+Each step below is a **single line**. That is deliberate: many markdown viewers
+only put the first line of a fenced block inside the block and render the rest as
+separate inline spans, so selecting the block copies one line and silently drops
+the others. One line per step has nothing to lose.
+
 ```bash
-brew install ollama
-ollama pull gemma3:12b
-ollama pull llama3.2:3b
-ollama list
+brew install ollama && for m in gemma3:12b llama3.2:3b; do ollama pull "$m"; done && ollama list
 ```
 
 (Or install from the `.dmg` at <https://ollama.com/download> instead of Homebrew.)
@@ -374,14 +385,16 @@ ollama list
 serves the trend summary. Optional alternatives worth benchmarking against them:
 
 ```bash
-ollama pull gemma3:27b
-ollama pull gemma3:12b-it-qat
-ollama pull gemma3:4b
+for m in gemma3:27b gemma3:12b-it-qat gemma3:4b; do ollama pull "$m"; done && ollama list
 ```
 
-`gemma3:27b` is ~17 GB — slower, more judgment. `gemma3:12b-it-qat` is Google's
+`gemma3:27b` is ~17.4 GB — slower, more judgment. `gemma3:12b-it-qat` is Google's
 quantization-aware build, near-bf16 quality at roughly Q4 size. `gemma3:4b` is
 ~3.3 GB and a better trend model than `llama3.2:3b`.
+
+The trailing `ollama list` is the check that everything you asked for actually
+arrived — compare its output against the names you passed rather than assuming a
+silent success.
 
 Pulls are resumable and cached under `~/.ollama/models`; `ollama rm <tag>` frees
 the disk again. Nothing is loaded into memory until a request arrives.
@@ -429,12 +442,11 @@ you pulled. An empty `{"models":[]}` means it's running as root — back it out 
 retry without `sudo`:
 
 ```bash
-sudo launchctl bootout system/com.ollama.serve
-launchctl bootout gui/$(id -u)/com.ollama.serve
-sudo pkill -f 'ollama serve'
+sudo launchctl bootout system/com.ollama.serve; launchctl bootout gui/$(id -u)/com.ollama.serve; sudo pkill -f 'ollama serve'
 ```
 
-Both `bootout` lines error harmlessly if nothing was loaded in that domain.
+Both `bootout` calls error harmlessly if nothing was loaded in that domain — the
+`;` separators (rather than `&&`) are what let the line continue past them.
 `launchctl` identifies a service by the `Label` **inside** the plist, not the
 filename — if you rename the file, use the label in these commands, or read it
 back with:
@@ -501,8 +513,7 @@ Check the link before wiring up cron — this is the failure that otherwise show
 up as a silent fall back to rule-based output twice a day:
 
 ```bash
-curl -s http://mac-mini.local:11434/api/tags
-OLLAMA_HOST=http://mac-mini.local:11434 ./venv/bin/python bench_models.py --job advisor
+curl -s http://mac-mini.local:11434/api/tags && OLLAMA_HOST=http://mac-mini.local:11434 ./venv/bin/python bench_models.py --job advisor
 ```
 
 `bench_models.py` works across the network too, so you can benchmark the Mac's
@@ -608,16 +619,21 @@ asleep at the scheduled time — cron just skips it.
 ### Linux (cron)
 
 ```bash
-git clone https://github.com/billford/waterguru-dashboard && cd waterguru-dashboard
-python3 -m venv venv
-./venv/bin/pip install requests requests_aws4auth boto3 pycognito
-cp .env.example .env && $EDITOR .env
-./run_and_publish.sh
-crontab -e
+git clone https://github.com/billford/waterguru-dashboard && cd waterguru-dashboard && python3 -m venv venv && ./venv/bin/pip install requests requests_aws4auth boto3 pycognito && cp -n .env.example .env
 ```
 
-Run `./run_and_publish.sh` by hand once and confirm it works before scheduling it.
-Then paste the schedule from `crontab.example` into `crontab -e`, fixing the path.
+Edit `.env`, then confirm one manual run works before scheduling anything:
+
+```bash
+$EDITOR .env && ./run_and_publish.sh
+```
+
+Only once that succeeds, add the schedule — paste from `crontab.example`, fixing
+the path:
+
+```bash
+crontab -e
+```
 
 `crontab.example` has the schedule ready to edit:
 
@@ -686,13 +702,17 @@ subsequent reading):
 
 ## Deploying the dashboard
 
+A one-time browser auth, then create the project:
+
 ```bash
-npx wrangler login
-npx wrangler pages project create waterguru-dashboard --production-branch main
-./run_and_publish.sh
+npx wrangler login && npx wrangler pages project create waterguru-dashboard --production-branch main
 ```
 
-`wrangler login` is a one-time browser auth; the last line does a fetch and deploy.
+Every deploy after that is just a normal run:
+
+```bash
+./run_and_publish.sh
+```
 
 The dashboard reads `site/data/*.json` client-side — there's no backend, just
 static files that get overwritten and redeployed on each fetch. Deployment is a
