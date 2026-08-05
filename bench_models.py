@@ -104,12 +104,22 @@ def _run_advisor(model: str, timeout: int) -> dict:
         return {"ok": False, "detail": "output was not valid JSON", "result": result}
 
     valid = isinstance(parsed, dict) and _valid_llm_result(parsed, days)
-    verdicts = " ".join(
-        f"{d.get('date', '?')[5:]}={d.get('verdict', '?')}" for d in parsed.get("days", [])
-    ) if isinstance(parsed, dict) else ""
+    entries = parsed.get("days", []) if isinstance(parsed, dict) else []
+    verdicts = " ".join(f"{d.get('date', '?')[5:]}={d.get('verdict', '?')}" for d in entries)
+
+    if valid:
+        detail = verdicts
+    else:
+        # Name the specific gap rather than a generic "failed validation" - a
+        # dropped day looks fine at a glance (valid JSON, valid verdicts) and is
+        # exactly the kind of failure a vague message lets slide unnoticed.
+        seen = {e.get("date") for e in entries if isinstance(e, dict)}
+        missing = sorted({d["date"] for d in days} - seen)
+        detail = f"missing date(s): {', '.join(missing)}" if missing else "JSON parsed but failed the schema/date check"
+
     return {
         "ok": valid,
-        "detail": verdicts if valid else "JSON parsed but failed the schema/date check",
+        "detail": detail,
         "result": result,
         "extra": (parsed.get("heater_advice") or "")[:200] if isinstance(parsed, dict) else "",
     }

@@ -120,6 +120,7 @@ def _valid_llm_result(result: dict, days: list[dict]) -> bool:
     advice = result.get("heater_advice")
     if not isinstance(entries, list) or not entries or not isinstance(advice, str) or not advice.strip():
         return False
+    seen_dates = set()
     for e in entries:
         if not isinstance(e, dict):
             return False
@@ -127,7 +128,13 @@ def _valid_llm_result(result: dict, days: list[dict]) -> bool:
             return False
         if e.get("verdict") not in VALID_VERDICTS:
             return False
-    return True
+        seen_dates.add(e["date"])
+    # The date enum keeps every entry's date *known*, but says nothing about
+    # *coverage* - a model that drops a day still passes if this check stops at
+    # "no unknown dates." A dropped day would otherwise reach the dashboard
+    # silently as one rule-based verdict mixed into an array reported as
+    # source: "llm", so require every forecast date to actually be answered.
+    return seen_dates == known_dates
 
 
 def build_advice(weather_path: Path, history_path: Path) -> dict:
