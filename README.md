@@ -237,6 +237,41 @@ WG_LLM_TIMEOUT=180                   # seconds before falling back to rule-based
 The dashboard reports whichever model actually produced the text, so the
 "How the AI works" page stays honest when you swap models.
 
+#### Telling the advisor about your pool
+
+Two settings shape what the swim advisor actually asks the model for, rather
+than assuming a generic pool:
+
+```
+WG_POOL_HAS_HEATER=1
+WG_POOL_CONTEXT=We mainly swim weekends (Sat/Sun). Comfort matters more to us than running the heater less.
+```
+
+- **`WG_POOL_HAS_HEATER=0`** if the pool has no heater. This isn't cosmetic —
+  without it, the advisor always asks the model for heater-adjustment advice,
+  even for equipment that doesn't exist. Setting it to `0` drops the heater
+  question from the prompt entirely and forces `heater_advice` to `null` in
+  `swim_advice.json` regardless of what the model says, so a model that
+  free-associates about a heater anyway never reaches the dashboard. Day-by-day
+  swim verdicts run exactly the same either way.
+- **`WG_POOL_CONTEXT`** is free text folded into the prompt as-is — which days
+  you actually swim, how often, what you'd rather optimize for. This is what
+  lets the model reason about lead time relative to when you'll actually be in
+  the water: a cold snap on a Tuesday you'll never swim matters far less than
+  one that lands on the weekend. Without it, the advisor treats every day of
+  the forecast as equally relevant, which isn't true for most households.
+
+Both feed into `bench_models.py` too, so benchmarking exercises the exact prompt
+shape your `.env` actually produces rather than a generic one that quietly
+diverges from what runs in production.
+
+One setting we deliberately did **not** add: a hemisphere/continent field.
+`weather.py` is hardcoded to the National Weather Service (`api.weather.gov`),
+which only covers the US — the forecast card (and therefore the whole advisor)
+simply doesn't work outside the US today, regardless of any season-hint config.
+Adding a continent setting would be configuration with nothing behind it; if a
+non-US weather source gets added later, this is the natural place to revisit it.
+
 #### Picking a model for your hardware
 
 The swim advisor is the demanding job: it has to weigh season, water temp, rain,

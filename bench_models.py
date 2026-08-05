@@ -52,13 +52,20 @@ SAMPLE_ROWS = [
 
 
 def _advisor_prompt() -> tuple[str, list[dict]]:
-    from swim_advisor import _build_prompt
+    from swim_advisor import _build_prompt, has_heater, pool_context
 
     weather_file = DATA / "weather.json"
     days = SAMPLE_DAYS
     if weather_file.exists():
         days = json.loads(weather_file.read_text()).get("days") or SAMPLE_DAYS
-    return _build_prompt(days, water_temp=86, today=datetime.now(timezone.utc)), days
+    # Use the same has_heater/pool_context your .env actually sets, so a
+    # benchmark run tests the exact prompt shape the real pipeline sends -
+    # not a generic one that quietly diverges from production.
+    prompt = _build_prompt(
+        days, water_temp=86, today=datetime.now(timezone.utc),
+        context=pool_context(), heater=has_heater(),
+    )
+    return prompt, days
 
 
 def _trend_prompt() -> str:
@@ -90,7 +97,7 @@ def _unload(model: str):
 
 
 def _run_advisor(model: str, timeout: int) -> dict:
-    from swim_advisor import advice_schema, _valid_llm_result
+    from swim_advisor import advice_schema, has_heater, _valid_llm_result
 
     prompt, days = _advisor_prompt()
     schema = advice_schema([d["date"] for d in days])
@@ -103,7 +110,7 @@ def _run_advisor(model: str, timeout: int) -> dict:
     except json.JSONDecodeError:
         return {"ok": False, "detail": "output was not valid JSON", "result": result}
 
-    valid = isinstance(parsed, dict) and _valid_llm_result(parsed, days)
+    valid = isinstance(parsed, dict) and _valid_llm_result(parsed, days, require_heater_advice=has_heater())
     entries = parsed.get("days", []) if isinstance(parsed, dict) else []
     verdicts = " ".join(f"{d.get('date', '?')[5:]}={d.get('verdict', '?')}" for d in entries)
 
