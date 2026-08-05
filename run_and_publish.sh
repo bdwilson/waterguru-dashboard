@@ -72,4 +72,31 @@ for k in ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "WG_CF_PROJECT_NAME")
         print(f"export {k}={shlex.quote(v)}")
 ')"
 
-npx --yes wrangler pages deploy site --project-name "${WG_CF_PROJECT_NAME:-waterguru-dashboard}" --branch main --commit-dirty=true
+CF_PROJECT="${WG_CF_PROJECT_NAME:-waterguru-dashboard}"
+
+# `wrangler pages deploy` does not create the project if it's missing - even
+# with a valid token, it errors rather than creating one non-interactively
+# (project creation is a one-time, deliberate step, not something to happen as
+# a side effect of a routine deploy - a typo'd WG_CF_PROJECT_NAME would
+# otherwise silently spin up a new, wrong, empty project on every cron run
+# instead of loudly failing). Toggle errexit off just for this one command so
+# a failure doesn't kill the script before its real exit code can be
+# inspected - `if ! cmd; then ...` looks equivalent but isn't: $? inside that
+# `then` reflects the negated boolean of the whole condition (always 0), not
+# cmd's actual status, so `exit "$?"` there would always report success.
+set +e
+deploy_output=$(npx --yes wrangler pages deploy site --project-name "$CF_PROJECT" --branch main --commit-dirty=true 2>&1)
+deploy_status=$?
+set -e
+
+echo "$deploy_output"
+
+if [ "$deploy_status" -ne 0 ]; then
+    if echo "$deploy_output" | grep -qi "project not found\|could not find project\|does not exist"; then
+        echo "" >&2
+        echo "Cloudflare Pages project '$CF_PROJECT' doesn't exist yet - create it once (no browser needed" >&2
+        echo "with CLOUDFLARE_API_TOKEN set; don't run 'wrangler login' first, that's a separate auth path):" >&2
+        echo "  npx wrangler pages project create \"$CF_PROJECT\" --production-branch main" >&2
+    fi
+    exit "$deploy_status"
+fi

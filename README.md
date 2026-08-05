@@ -779,10 +779,32 @@ CLOUDFLARE_ACCOUNT_ID=your_account_id_here
 your project something other than `waterguru-dashboard`) from `.env` into the
 shell before calling `npx wrangler` — wrangler itself only reads them from its
 process environment, not from this project's `.env` file, so that bridge step
-is what actually makes them take effect. `wrangler pages project create`
-still needs a one-time interactive run somewhere with a browser (or `--help`
-your way through the non-interactive flags), but every deploy after that runs
-unattended with the token — no login step, ever.
+is what actually makes them take effect.
+
+**Creating the project itself needs no browser either** — it's a separate
+one-time command using the same token, not `wrangler login`:
+
+```bash
+export CLOUDFLARE_API_TOKEN=your_token_here
+export CLOUDFLARE_ACCOUNT_ID=your_account_id_here
+npx wrangler pages project create waterguru-dashboard --production-branch main
+```
+
+Do **not** run `wrangler login` here, even out of habit — it always launches
+the OAuth browser flow regardless of whether a token is set, since `login` and
+a token are two separate, mutually exclusive auth paths; `login` doesn't check
+for a token first because establishing an OAuth session is the entire point of
+that command. On a headless box that flow can't complete (it waits for the
+browser's redirect to reach a `localhost` port on the *same machine* wrangler
+is running on), and there's no field anywhere to paste the callback back in
+manually — wrangler's login flow has no such step.
+
+Once the project exists, every deploy after that runs unattended with the
+token — no login step, ever. If you forget this step and deploy before the
+project exists, `run_and_publish.sh` won't try to guess what you meant: it
+prints the exact create command above and exits non-zero, rather than quietly
+creating a new (possibly typo'd) project as a side effect of a routine cron
+run.
 
 Don't commit the token — it's a credential with deploy access to your
 Cloudflare account, same handling as `WG_PASS`.
