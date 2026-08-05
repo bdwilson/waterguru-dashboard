@@ -258,9 +258,31 @@ Estimates for a 32 GB / 120 GB/s M4 mini, Q4_K_M quantization:
 |---|---|---|---|---|
 | `llama3.2:3b` | 2.0 GB | ~40 tok/s | ~5 s | Fine for the trend summary; weak judgment for the advisor |
 | `gemma3:4b` | 3.3 GB | ~25 tok/s | ~8 s | Good trend model, better prose than llama3.2 |
-| `gemma3:12b` | 8.1 GB | ~10-13 tok/s | ~15-25 s | **Best fit for the advisor here** — real headroom, no eviction churn |
-| `gemma3:27b` | 17 GB | ~5-6 tok/s | ~45-70 s | Fits, but uses most of the budget; nothing else stays resident |
+| `gemma3:12b` | 8.1 GB | ~10-13 tok/s | ~15-25 s | **Best dense fit for the advisor** — real headroom, no eviction churn |
+| `gemma3:27b` | 17.4 GB | ~5-6 tok/s | ~45-70 s | Fits, but uses most of the budget; nothing else stays resident |
 | `qwen2.5:32b` | ~20 GB | ~4-5 tok/s | ~60-90 s | Fits only just, at the edge of the wired limit — expect swapping |
+
+#### Mixture-of-experts models break this arithmetic (in your favor)
+
+The table above assumes **dense** models, where every weight is read for every
+token — which is why speed tracks file size so closely. A mixture-of-experts
+model only reads its active experts per token, so the two numbers come apart:
+
+| | Resident in RAM | Read per token | Est. speed @ 120 GB/s |
+|---|---|---|---|
+| `gemma3:12b` (dense) | 8.1 GB | ~8.1 GB | ~10-13 tok/s |
+| `gemma3:27b` (dense) | 17.4 GB | ~17.4 GB | ~5-6 tok/s |
+| a 26B-A4B MoE | ~15.4 GB | ~2-3 GB | ~25-35 tok/s |
+
+An `NNB-A4B` tag conventionally means *N* billion total parameters with ~4B
+active. **The full model still has to be resident** — any expert can fire on any
+token, so the memory budget is governed by total size — but throughput is
+governed by the active slice. That makes MoE unusually well matched to a
+bandwidth-starved machine like the base M4: you spend the RAM you have plenty of
+to buy back the bandwidth you don't.
+
+Worth benchmarking rather than assuming — `bench_models.py`'s tok/s column tells
+you immediately whether a given build behaves like its active or its total size.
 
 Two practical consequences on a 32 GB machine:
 
@@ -314,12 +336,21 @@ whether the advisor's output contract validated:
 
 ```bash
 ./venv/bin/python bench_models.py
-./venv/bin/python bench_models.py gemma3:12b qwen2.5:32b
+./venv/bin/python bench_models.py gemma3:12b gemma3:27b
 ./venv/bin/python bench_models.py --job advisor --runs 3
 ```
 
 With no arguments it tests everything installed; naming models compares them head
-to head; `--runs 3` repeats each one to check the verdicts are consistent.
+to head; `--runs 3` repeats each one to check the verdicts are consistent. Model
+names may come before or after the flags, and tags containing `/` or `:` (such as
+a `hf.co/...` build) need no quoting.
+
+It also works against a remote Ollama, so you can benchmark the model host from
+the machine that will actually be calling it:
+
+```bash
+OLLAMA_HOST=http://mac-mini.local:11434 ./venv/bin/python bench_models.py --job advisor --runs 3
+```
 
 It unloads each model before moving to the next, so timings are comparable and
 peak memory stays at one model's worth.
