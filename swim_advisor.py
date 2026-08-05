@@ -16,29 +16,42 @@ from db import DB_PATH
 
 VALID_VERDICTS = ["great", "good", "marginal", "poor"]
 
-# Ollama constrains sampling to this schema (Ollama >= 0.5), so the output
-# contract is enforced by the decoder rather than by asking the model politely.
-# That is what lets a mid-size local model do this job reliably - the failure
-# mode of a small model becomes a weak verdict, not unparseable output.
-ADVICE_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "days": {
-            "type": "array",
-            "items": {
-                "type": "object",
-                "properties": {
-                    "date": {"type": "string"},
-                    "verdict": {"type": "string", "enum": VALID_VERDICTS},
-                    "note": {"type": "string"},
+
+def advice_schema(dates: list[str]) -> dict:
+    """Builds the JSON Schema Ollama constrains sampling to (Ollama >= 0.5), so
+    the output contract is enforced by the decoder rather than by asking the
+    model politely - that's what lets a mid-size local model do this job
+    reliably, since the failure mode becomes a weak verdict, not unparseable
+    output.
+
+    `date` is constrained to an enum of *this run's* actual forecast dates
+    rather than a bare string. A free-form date field looks constrained but
+    isn't - it lets a model return well-formed JSON with valid verdicts on
+    dates that don't match the forecast, which is exactly the failure mode a
+    schema is supposed to rule out. Building the schema per-call is the fix:
+    with the real dates as the enum, a mismatched date is something the
+    decoder cannot produce, not just something _valid_llm_result rejects
+    after the fact.
+    """
+    return {
+        "type": "object",
+        "properties": {
+            "days": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "date": {"type": "string", "enum": dates},
+                        "verdict": {"type": "string", "enum": VALID_VERDICTS},
+                        "note": {"type": "string"},
+                    },
+                    "required": ["date", "verdict", "note"],
                 },
-                "required": ["date", "verdict", "note"],
             },
+            "heater_advice": {"type": "string"},
         },
-        "heater_advice": {"type": "string"},
-    },
-    "required": ["days", "heater_advice"],
-}
+        "required": ["days", "heater_advice"],
+    }
 
 
 def _latest_water_temp(water_body_id: str):
@@ -83,11 +96,11 @@ Respond with ONLY this JSON shape, no other text:
 "heater_advice": "<2-4 sentences>"}}"""
 
 
-def _call_llm(prompt: str) -> tuple[dict, llm.LLMResult] | None:
+def _call_llm(prompt: str, dates: list[str]) -> tuple[dict, llm.LLMResult] | None:
     result = llm.generate(
         prompt,
         model=llm.advisor_model(),
-        fmt=ADVICE_SCHEMA,
+        fmt=advice_schema(dates),
         timeout=llm.timeout_s(180),
     )
     if not result or not result.text:
@@ -129,7 +142,7 @@ def build_advice(weather_path: Path, history_path: Path) -> dict:
 
     today = datetime.now(timezone.utc)
     prompt = _build_prompt(days, water_temp, today)
-    called = _call_llm(prompt)
+    called = _call_llm(prompt, [d["date"] for d in days])
 
     if called and _valid_llm_result(called[0], days):
         parsed, meta = called

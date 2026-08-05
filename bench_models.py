@@ -90,10 +90,11 @@ def _unload(model: str):
 
 
 def _run_advisor(model: str, timeout: int) -> dict:
-    from swim_advisor import ADVICE_SCHEMA, _valid_llm_result
+    from swim_advisor import advice_schema, _valid_llm_result
 
     prompt, days = _advisor_prompt()
-    result = llm.generate(prompt, model=model, fmt=ADVICE_SCHEMA, timeout=timeout)
+    schema = advice_schema([d["date"] for d in days])
+    result = llm.generate(prompt, model=model, fmt=schema, timeout=timeout)
     if not result:
         return {"ok": False, "detail": "no response (timeout, OOM, or Ollama unreachable)"}
 
