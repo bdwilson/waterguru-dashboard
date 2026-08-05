@@ -379,14 +379,70 @@ cat > ~/Library/LaunchAgents/com.ollama.serve.plist <<'PLIST'
 </dict>
 </plist>
 PLIST
-launchctl load ~/Library/LaunchAgents/com.ollama.serve.plist
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/com.ollama.serve.plist
+ps -o user,pid,command -p $(pgrep -f 'ollama serve')
 curl -s localhost:11434/api/tags | head -c 200
 ```
 
-That last line should print JSON listing the models you pulled. If Homebrew put
-`ollama` somewhere other than `/opt/homebrew/bin` (Intel Macs use
+> **Do not run any of that under `sudo`.** A LaunchAgent is meant to run as you.
+> `sudo launchctl` targets the system domain instead and starts Ollama as
+> **root**, which reads `/var/root/.ollama/models` rather than the `~/.ollama`
+> your `ollama pull` wrote to. The server comes up healthy and serves an empty
+> model list — so the pipeline quietly falls back to rule-based output with
+> nothing obviously broken. `launchctl load` is also the deprecated spelling and
+> is what emits the "Expecting a LaunchDaemons path" warning; `bootstrap` is the
+> current one.
+
+The `ps` line must show **your** username, and the `curl` must list the models
+you pulled. An empty `{"models":[]}` means it's running as root — back it out and
+retry without `sudo`:
+
+```bash
+sudo launchctl bootout system/com.ollama.serve
+launchctl bootout gui/$(id -u)/com.ollama.serve
+sudo pkill -f 'ollama serve'
+```
+
+Both `bootout` lines error harmlessly if nothing was loaded in that domain.
+`launchctl` identifies a service by the `Label` **inside** the plist, not the
+filename — if you rename the file, use the label in these commands, or read it
+back with:
+
+```bash
+/usr/libexec/PlistBuddy -c 'Print :Label' ~/Library/LaunchAgents/com.ollama.serve.plist
+```
+
+If Homebrew put `ollama` somewhere other than `/opt/homebrew/bin` (Intel Macs use
 `/usr/local/bin`), fix the path in the plist first — check with
 `command -v ollama`.
+
+### Surviving a reboot
+
+A LaunchAgent runs only while you are logged into a GUI session. Reboot a
+headless Mac with nobody logged in and Ollama never starts, so the next scheduled
+run degrades silently. Two ways to fix that:
+
+- **Enable automatic login** (System Settings → Users & Groups → Automatic login)
+  and keep the agent. This is the well-trodden path for Ollama on a Mac, and the
+  one assumed here.
+- **Use a LaunchDaemon** in `/Library/LaunchDaemons` for true boot-start. That
+  needs `UserName` set to your account *and* `OLLAMA_MODELS` pointed at your home
+  directory, and there are recurring reports of Metal GPU access being unreliable
+  from the system context — which would silently drop you to CPU inference and
+  make a 12B model unusably slow. Verify `ollama ps` shows `100% GPU` before
+  trusting it.
+
+Either way, confirm with an actual reboot before scheduling against it:
+
+```bash
+sudo reboot
+```
+
+then, once it is back, from the machine that will be calling it:
+
+```bash
+curl -s http://mac-mini.local:11434/api/tags
+```
 
 `OLLAMA_KEEP_ALIVE=24h` matters for a twice-daily job: at the 5-minute default
 every run reloads both models from disk first. With 10 GB of models against a
