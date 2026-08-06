@@ -55,24 +55,7 @@ if ! command -v npx >/dev/null 2>&1; then
     exit 0
 fi
 
-# wrangler is a separate (non-Python) process, so anything set only inside
-# fetch.py's own os.environ never reaches it - .env has to be bridged into
-# *this shell* too. Reuse envfile.py's parser rather than `source .env`
-# directly: several settings (e.g. WG_POOL_CONTEXT) are free text with
-# unquoted spaces and parentheses, which a literal shell source would choke
-# on. Anything the caller or cron already exported wins, same precedence as
-# every other .env-backed setting in this project.
-eval "$("$PYTHON" -c '
-import os, shlex
-import envfile
-envfile.load_dotenv()
-for k in ("CLOUDFLARE_API_TOKEN", "CLOUDFLARE_ACCOUNT_ID", "WG_CF_PROJECT_NAME"):
-    v = os.environ.get(k)
-    if v:
-        print(f"export {k}={shlex.quote(v)}")
-')"
-
-CF_PROJECT="${WG_CF_PROJECT_NAME:-waterguru-dashboard}"
+source "$PWD/cf_env.sh"
 
 # `wrangler pages deploy` does not create the project if it's missing - even
 # with a valid token, it errors rather than creating one non-interactively
@@ -94,9 +77,8 @@ echo "$deploy_output"
 if [ "$deploy_status" -ne 0 ]; then
     if echo "$deploy_output" | grep -qi "project not found\|could not find project\|does not exist"; then
         echo "" >&2
-        echo "Cloudflare Pages project '$CF_PROJECT' doesn't exist yet - create it once (no browser needed" >&2
-        echo "with CLOUDFLARE_API_TOKEN set; don't run 'wrangler login' first, that's a separate auth path):" >&2
-        echo "  npx wrangler pages project create \"$CF_PROJECT\" --production-branch main" >&2
+        echo "Cloudflare Pages project '$CF_PROJECT' doesn't exist yet. Create it once:" >&2
+        echo "  ./cf_create.sh" >&2
     fi
     exit "$deploy_status"
 fi

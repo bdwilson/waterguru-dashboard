@@ -147,6 +147,8 @@ alerts.py                    # desktop notification + ntfy.sh / Pushover on RED 
 envfile.py                   # .env loader, shared by every entrypoint
 bench_models.py              # time candidate models on this project's real prompts
 run_and_publish.sh           # fetch.py, then `wrangler pages deploy` (cron- and launchd-safe)
+cf_create.sh                 # one-time: create the Cloudflare Pages project from .env, no browser
+cf_env.sh                    # shared by both scripts above - bridges .env's Cloudflare vars into the shell
 com.billfordx.waterguru-fetch.plist   # launchd schedule (8am/8pm), macOS
 crontab.example              # cron schedule (8am/8pm), Linux
 site/
@@ -775,34 +777,37 @@ CLOUDFLARE_API_TOKEN=your_token_here
 CLOUDFLARE_ACCOUNT_ID=your_account_id_here
 ```
 
-`run_and_publish.sh` bridges these (and `WG_CF_PROJECT_NAME`, if you named
-your project something other than `waterguru-dashboard`) from `.env` into the
-shell before calling `npx wrangler` — wrangler itself only reads them from its
-process environment, not from this project's `.env` file, so that bridge step
-is what actually makes them take effect.
+Both `cf_create.sh` and `run_and_publish.sh` bridge these (and
+`WG_CF_PROJECT_NAME`, if you named your project something other than
+`waterguru-dashboard`) from `.env` into the shell via `cf_env.sh` before
+calling `npx wrangler` — wrangler itself only reads them from its process
+environment, not from this project's `.env` file, so that bridge step is what
+actually makes them take effect.
 
-**Creating the project itself needs no browser either** — it's a separate
-one-time command using the same token, not `wrangler login`:
+4. Create the project — one time, no browser needed:
 
 ```bash
-export CLOUDFLARE_API_TOKEN=your_token_here
-export CLOUDFLARE_ACCOUNT_ID=your_account_id_here
-npx wrangler pages project create waterguru-dashboard --production-branch main
+./cf_create.sh
 ```
 
-Do **not** run `wrangler login` here, even out of habit — it always launches
-the OAuth browser flow regardless of whether a token is set, since `login` and
-a token are two separate, mutually exclusive auth paths; `login` doesn't check
-for a token first because establishing an OAuth session is the entire point of
-that command. On a headless box that flow can't complete (it waits for the
-browser's redirect to reach a `localhost` port on the *same machine* wrangler
-is running on), and there's no field anywhere to paste the callback back in
-manually — wrangler's login flow has no such step.
+Safe to re-run: if the project already exists, it says so and exits 0 rather
+than treating that as a failure. It's a thin, scriptable wrapper around
+`wrangler pages project create` using the same token as step 3 — nothing here
+needs `wrangler login`.
+
+**Do not run `wrangler login`** for any of this, even out of habit — it always
+launches the OAuth browser flow regardless of whether a token is set, since
+`login` and a token are two separate, mutually exclusive auth paths; `login`
+doesn't check for a token first because establishing an OAuth session is the
+entire point of that command. On a headless box that flow can't complete (it
+waits for the browser's redirect to reach a `localhost` port on the *same
+machine* wrangler is running on), and there's no field anywhere to paste the
+callback back in manually — wrangler's login flow has no such step.
 
 Once the project exists, every deploy after that runs unattended with the
-token — no login step, ever. If you forget this step and deploy before the
+token — no login step, ever. If you skip `cf_create.sh` and deploy before the
 project exists, `run_and_publish.sh` won't try to guess what you meant: it
-prints the exact create command above and exits non-zero, rather than quietly
+prints `./cf_create.sh` as the fix and exits non-zero, rather than quietly
 creating a new (possibly typo'd) project as a side effect of a routine cron
 run.
 
