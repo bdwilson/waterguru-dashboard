@@ -151,11 +151,12 @@
       The prompts (pool readings, weather forecast, today's date) never leave that machine, and neither
       model has internet access or tool use — they just read the numbers they're given and write text
       back. The only things that do leave the machine each run are the calls to WaterGuru, the National
-      Weather Service, and — if you've enabled push alerts — ntfy.sh.</p>
+      Weather Service, and — if you've enabled push alerts — ntfy.sh or Pushover.</p>
+    <p class="muted" id="verifyNote" style="display:none"></p>
   </div>
 
   <div class="card">
-    <h2>Trend summary <span class="tag">llama3.2:3b</span></h2>
+    <h2>Trend summary <span class="tag" id="trendModelTag">llama3.2:3b</span></h2>
     <p class="muted">The 2-3 sentence readout at the top of the dashboard on whether chlorine, pH, and
       water temp are trending up, down, or holding steady.</p>
     <div class="flow-step">
@@ -178,29 +179,40 @@
   </div>
 
   <div class="card">
-    <h2>Swim &amp; heater advisor <span class="tag">qwen2.5:32b</span></h2>
+    <h2>Swim &amp; heater advisor <span class="tag" id="advisorModelTag">qwen2.5:32b</span></h2>
     <p class="muted">The great/good/marginal/poor verdict on each of the next 5 days, plus the heater
-      lead-time advice paragraph.</p>
+      lead-time advice paragraph (skipped entirely for a pool with no heater — see below).</p>
     <div class="flow-step">
       <div class="flow-num">1</div>
       <div class="flow-text"><b>Input:</b> today's date, the pool's most recent water-temperature
-        reading, and the 5-day National Weather Service forecast (high temp, rain chance, wind, and
-        conditions for each day).</div>
+        reading, the 5-day National Weather Service forecast (high temp, rain chance, wind, and
+        conditions for each day), and — if the owner filled it in — a sentence on how the pool actually
+        gets used (which days, how often, what matters more to them).</div>
     </div>
     <div class="flow-step">
       <div class="flow-num">2</div>
       <div class="flow-text"><b>Prompt:</b> asks the model to weigh each day's air temperature against
-        the water temp and against what's normal for the season, factor in rain/wind/storms, and — since
-        this is a heated pool that takes a couple of days to visibly move in temperature — call out any
-        day that's notably cooler or warmer than the rest of the stretch, with a concrete suggestion to
-        adjust the heater setpoint roughly 2-3 days ahead of it.</div>
+        the water temp and against what's normal for the season, factor in rain/wind/storms, and — for a
+        heated pool that takes a couple of days to visibly move in temperature — call out any day that's
+        notably cooler or warmer than the rest of the stretch, with a concrete suggestion to adjust the
+        heater setpoint roughly 2-3 days ahead of it, weighed against which days the owner actually
+        swims if they said so. For a pool with no heater, this whole ask is dropped from the prompt —
+        the model is told outright there's no heater rather than being asked to invent advice for
+        equipment that isn't there.</div>
     </div>
     <div class="flow-step">
       <div class="flow-num">3</div>
       <div class="flow-text"><b>Output contract:</b> the model must return strict JSON — a verdict
         (<code>great</code>/<code>good</code>/<code>marginal</code>/<code>poor</code>) and a one-phrase
-        note per day, plus the heater-advice paragraph. The response is validated (right dates, right
-        verdict values) before the dashboard trusts it.</div>
+        note per day, plus the heater-advice paragraph. That shape is handed to Ollama as a JSON
+        Schema, so the sampler is <i>constrained</i> to it token by token rather than merely asked for
+        it — the model physically can't emit an invalid verdict, or a date outside the forecast it was
+        given. The response is still validated before the dashboard trusts it: every forecast date has
+        to actually appear, since a schema that only rules out <i>wrong</i> dates doesn't rule out
+        <i>missing</i> ones — a model that quietly drops a day is rejected just like one that invents a
+        bad one. For a heaterless pool, the heater-advice field is forced to empty regardless of what
+        the model wrote, so a model that ignores the instruction and invents heater text anyway never
+        reaches the dashboard.</div>
     </div>
     <div class="flow-step">
       <div class="flow-num">4</div>
@@ -224,13 +236,18 @@
         <tr><td>gpt-oss:20b</td><td>Ignored the JSON output constraint entirely and returned rambling
           chain-of-thought prose instead of the requested structure.</td></tr>
         <tr class="used"><td class="used">qwen2.5:32b</td><td class="used">Reliable JSON every time, and
-          verdicts that were internally consistent (worse weather reliably scored worse) — this is what's
-          actually running. Takes roughly 30-45 seconds per run, which is a non-issue for something that
-          runs twice a day in the background.</td></tr>
+          verdicts that were internally consistent (worse weather reliably scored worse). Takes roughly
+          30-45 seconds per run, which is a non-issue for something that runs twice a day in the
+          background.</td></tr>
       </tbody>
     </table>
-    <p>The trend summary's ask is simpler (summarize a table of numbers in a few sentences), so the
-      smaller, much faster <code>llama3.2:3b</code> handles it fine.</p>
+    <p>The trend summary's ask is simpler (summarize a table of numbers in a few sentences), so a small,
+      much faster model handles it fine.</p>
+    <p>Since that comparison, the advisor's JSON shape is enforced by constrained decoding rather than by
+      prompt instructions, which takes "returns valid JSON" off the table as a differentiator — what's
+      left to compare is judgment quality and speed. Mid-size models like <code>gemma3:12b</code> become
+      viable on that basis, and the model is now a config setting rather than a code change. The tags
+      above show what actually produced the text you're reading on the dashboard.</p>
   </div>
 
   <div class="card">
@@ -246,5 +263,43 @@
     <a href="https://github.com/billford/waterguru-dashboard" target="_blank" rel="noopener">Source on GitHub</a>
   </footer>
 </div>
+
+<script>
+// The model behind each feature is configurable (WG_TREND_MODEL / WG_ADVISOR_MODEL),
+// so read the tags off the generated data rather than hardcoding them here.
+(async () => {
+  const set = (id, model) => {
+    if (model) document.getElementById(id).textContent = model;
+  };
+  const load = async (path) => {
+    try {
+      const r = await fetch(path, { cache: 'no-store' });
+      return r.ok ? await r.json() : null;
+    } catch { return null; }
+  };
+  const [summary, advice] = await Promise.all([load('data/summary.json'), load('data/swim_advice.json')]);
+  if (summary) {
+    const first = Object.values(summary)[0];
+    if (first) set('trendModelTag', first.model);
+  }
+  if (advice) set('advisorModelTag', advice.model);
+
+  // The "runs locally" claim above stops being the whole truth once the optional
+  // Claude cross-check is enabled — say so on the page rather than in the repo only.
+  const v = advice && advice.verification;
+  if (v && v.checked) {
+    const n = (v.disagreements || []).length;
+    const el = document.getElementById('verifyNote');
+    el.textContent =
+      `One exception, currently enabled: after the local model answers, its swim verdicts and the ` +
+      `weather forecast are sent to ${v.model} via the Claude API for a second opinion — no pool ` +
+      `chemistry history and no credentials. On the latest run it checked ${v.checked} day(s) and ` +
+      (n === 0 ? 'agreed with all of them' :
+        `disagreed on ${n}, which ${v.corrections_applied ? 'were corrected above' : 'were flagged but left as-is'}`) +
+      (v.cost_usd != null ? `, at a cost of $${v.cost_usd.toFixed(4)}.` : '.');
+    el.style.display = '';
+  }
+})();
+</script>
 </body>
 </html>

@@ -101,4 +101,7 @@ def export_weather(out_path: Path):
 
 
 if __name__ == "__main__":
+    from envfile import load_dotenv
+
+    load_dotenv()
     print(export_weather(HERE / "site" / "data" / "weather.json"))

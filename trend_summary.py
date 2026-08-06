@@ -6,12 +6,9 @@ import json
 import sqlite3
 from pathlib import Path
 
-import requests
-
+import llm
 from db import DB_PATH
 
-OLLAMA_URL = "http://localhost:11434/api/generate"
-MODEL = "llama3.2:3b"
 LOOKBACK_DAYS = 14
 
 
@@ -55,7 +52,7 @@ def _rule_based_summary(rows: list[dict]) -> str:
     return f"Over the last {len(rows)} readings, {', '.join(bits)}. Status looks {overall}."
 
 
-def _llm_summary(rows: list[dict], name: str) -> str | None:
+def _llm_summary(rows: list[dict], name: str) -> llm.LLMResult | None:
     lines = [
         f"{r['fetched_at'][:16]}  status={r['status']}  free_cl={r['free_cl']}  ph={r['ph']}  "
         f"temp={r['water_temp']}F  flow={r['skimmer_flow']}"
@@ -69,24 +66,18 @@ def _llm_summary(rows: list[dict], name: str) -> str | None:
         "down, or holding steady, and whether things look solid or need attention. Be direct and "
         "concrete with numbers. Do not repeat the raw data as a list - write plain prose. No preamble."
     )
-    try:
-        resp = requests.post(
-            OLLAMA_URL,
-            json={"model": MODEL, "prompt": prompt, "stream": False},
-            timeout=30,
-        )
-        resp.raise_for_status()
-        return resp.json().get("response", "").strip()
-    except requests.RequestException:
-        return None
+    result = llm.generate(prompt, model=llm.trend_model(), timeout=llm.timeout_s(30))
+    return result if result and result.text else None
 
 
 def summarize(water_body_id: str, name: str) -> dict:
     rows = _recent_rows(water_body_id)
-    llm_text = _llm_summary(rows, name) if rows else None
+    result = _llm_summary(rows, name) if rows else None
     return {
-        "text": llm_text or _rule_based_summary(rows),
-        "source": "llm" if llm_text else "rule_based",
+        "text": result.text if result else _rule_based_summary(rows),
+        "source": "llm" if result else "rule_based",
+        "model": result.model if result else None,
+        "elapsed_s": round(result.elapsed_s, 1) if result else None,
         "reading_count": len(rows),
     }
 
@@ -101,5 +92,8 @@ def export_summaries(history_path: Path, out_path: Path):
 
 
 if __name__ == "__main__":
+    from envfile import load_dotenv
+
+    load_dotenv()
     here = Path(__file__).resolve().parent
     print(export_summaries(here / "site" / "data" / "history.json", here / "site" / "data" / "summary.json"))

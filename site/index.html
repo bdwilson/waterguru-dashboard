@@ -355,7 +355,9 @@ function renderSummary() {
   if (!s) { card.style.display = 'none'; return; }
   card.style.display = '';
   document.getElementById('summarySub').textContent =
-    s.source === 'llm' ? 'generated locally by llama3.2:3b, based on recent readings' : 'based on recent readings';
+    s.source === 'llm'
+      ? `generated locally by ${s.model || 'a local LLM'}, based on recent readings`
+      : 'based on recent readings';
   document.getElementById('summaryText').textContent = s.text;
 }
 
@@ -372,9 +374,21 @@ function renderForecast() {
   card.style.display = '';
 
   const usingLlm = state.advice && state.advice.source === 'llm';
-  document.getElementById('forecastSub').textContent = usingLlm
-    ? 'via National Weather Service · verdicts by a local LLM (qwen2.5:32b), weighing season and current water temp'
+  const advisorModel = (state.advice && state.advice.model) || 'a local LLM';
+  let sub = usingLlm
+    ? `via National Weather Service · verdicts by ${advisorModel} running locally, weighing season and current water temp`
     : 'via National Weather Service';
+
+  // If a Claude cross-check ran, say what it found — an unreviewed verdict and
+  // one that survived review shouldn't look identical.
+  const v = state.advice && state.advice.verification;
+  if (v && v.checked) {
+    const n = (v.disagreements || []).length;
+    sub += n === 0
+      ? ` · cross-checked by ${v.model}, no disagreements`
+      : ` · cross-checked by ${v.model}, ${n} of ${v.checked} ${v.corrections_applied ? 'corrected' : 'flagged'}`;
+  }
+  document.getElementById('forecastSub').textContent = sub;
 
   const row = document.getElementById('forecastRow');
   row.innerHTML = '';

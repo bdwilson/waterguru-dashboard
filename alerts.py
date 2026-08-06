@@ -1,20 +1,40 @@
 """Fires notifications when a water body's status is RED.
 
-Channels: a native macOS notification (osascript) and a push via ntfy.sh
-(https://ntfy.sh/<topic> - no account needed, subscribe in the ntfy app).
+Channels, all optional and all independent - configure whichever you want in
+.env:
+
+  * desktop  - native macOS notification (osascript) or Linux `notify-send`.
+               Skipped automatically when there's no desktop session, which is
+               the normal case under cron on a headless box.
+  * ntfy.sh  - https://ntfy.sh/<topic>, no account needed.
+  * Pushover - https://pushover.net, needs a user key and an application token.
 """
 import os
+import shutil
 import subprocess
+import sys
 
 import requests
 
+from envfile import env_flag
 
-def _mac_notification(title: str, message: str):
-    script = (
-        f'display notification "{_escape_applescript(message)}" '
-        f'with title "{_escape_applescript(title)}" sound name "Basso"'
-    )
-    subprocess.run(["osascript", "-e", script], check=False)
+PUSHOVER_URL = "https://api.pushover.net/1/messages.json"
+
+
+def _desktop_notification(title: str, message: str):
+    if not env_flag("DESKTOP_NOTIFY", default=True):
+        return
+    if sys.platform == "darwin":
+        script = (
+            f'display notification "{_escape_applescript(message)}" '
+            f'with title "{_escape_applescript(title)}" sound name "Basso"'
+        )
+        subprocess.run(["osascript", "-e", script], check=False)
+        return
+    # Linux: only meaningful when there's a session bus to talk to. Under cron
+    # on a server there isn't one, so stay quiet rather than erroring out.
+    if shutil.which("notify-send") and (os.environ.get("DISPLAY") or os.environ.get("WAYLAND_DISPLAY")):
+        subprocess.run(["notify-send", "-u", "critical", title, message], check=False)
 
 
 def _escape_applescript(text: str) -> str:
@@ -33,16 +53,63 @@ def _ntfy_push(topic: str, title: str, message: str):
         print(f"ntfy push failed: {e}")
 
 
-def check_and_alert(rows: list[dict]):
-    ntfy_topic = os.environ.get("NTFY_TOPIC")
+def _pushover_push(token: str, user_key: str, title: str, message: str):
+    """Pushover priority: -2 silent, -1 quiet, 0 normal, 1 high, 2 requires ack.
 
+    Priority 2 also needs retry/expire, so they're sent whenever priority is 2.
+    """
+    try:
+        priority = int(os.environ.get("PUSHOVER_PRIORITY", "1"))
+    except ValueError:
+        priority = 1
+
+    payload = {
+        "token": token,
+        "user": user_key,
+        "title": title,
+        "message": message,
+        "priority": priority,
+    }
+    device = os.environ.get("PUSHOVER_DEVICE")
+    if device:
+        payload["device"] = device
+    sound = os.environ.get("PUSHOVER_SOUND")
+    if sound:
+        payload["sound"] = sound
+    if priority == 2:
+        payload["retry"] = os.environ.get("PUSHOVER_RETRY", "60")
+        payload["expire"] = os.environ.get("PUSHOVER_EXPIRE", "3600")
+
+    try:
+        resp = requests.post(PUSHOVER_URL, data=payload, timeout=10)
+        if resp.status_code != 200:
+            print(f"pushover push failed: {resp.status_code} {resp.text[:200]}")
+    except requests.RequestException as e:
+        print(f"pushover push failed: {e}")
+
+
+def send_notification(title: str, message: str):
+    """Fans one alert out to every configured channel."""
+    _desktop_notification(title, message)
+
+    ntfy_topic = os.environ.get("NTFY_TOPIC")
+    if ntfy_topic:
+        _ntfy_push(ntfy_topic, title, message)
+
+    po_token = os.environ.get("PUSHOVER_API_TOKEN")
+    po_user = os.environ.get("PUSHOVER_USER_KEY")
+    if po_token and po_user:
+        _pushover_push(po_token, po_user, title, message)
+    elif po_token or po_user:
+        print("pushover: set both PUSHOVER_API_TOKEN and PUSHOVER_USER_KEY, skipping")
+
+
+def check_and_alert(rows: list[dict]):
     for row in rows:
         name = row["name"] or "Pool"
 
         for title, message in _status_alerts(row, name) + _cassette_alerts(row, name):
-            _mac_notification(title, message)
-            if ntfy_topic:
-                _ntfy_push(ntfy_topic, title, message)
+            send_notification(title, message)
 
 
 def _status_alerts(row: dict, name: str) -> list[tuple[str, str]]:
@@ -90,3 +157,12 @@ def _format_alerts(alerts_json: str) -> str:
         return ""
     texts = [a.get("text") for a in alerts if a.get("status") == "RED" and a.get("text")]
     return "; ".join(texts)
+
+
+if __name__ == "__main__":
+    # `python alerts.py` sends a test alert through every configured channel.
+    from envfile import load_dotenv
+
+    load_dotenv()
+    send_notification("WaterGuru: test alert", "If you can read this, notifications are wired up.")
+    print("Test alert sent to all configured channels.")
